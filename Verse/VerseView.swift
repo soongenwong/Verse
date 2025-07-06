@@ -1,7 +1,7 @@
 import SwiftUI
 
-// No changes to APIKeyManager or LoadingState
-
+// No changes to APIKeyManager, LoadingState, Codable Models, or Enums.
+// The existing flexible models with optional properties are still essential.
 struct APIKeyManager {
     static func getGroqAPIKey() -> String? {
         guard let path = Bundle.main.path(forResource: "Secrets", ofType: "plist"),
@@ -13,54 +13,16 @@ struct APIKeyManager {
         return key
     }
 }
-
-enum LoadingState {
-    case idle
-    case loading
-    case success(VerseAnalysis)
-    case error(String)
-}
-
-
-// MARK: - FIX #1: Flexible Codable Models
-// We make properties optional (?) to prevent crashes if the AI omits a key.
-struct VerseAnalysis: Codable, Identifiable {
+enum LoadingState: Equatable { case idle, loading, success(VerseAnalysis), error(String) }
+struct VerseAnalysis: Codable, Identifiable, Equatable {
     var id: String { verseReference ?? UUID().uuidString }
-    
-    let verseReference: String?
-    let verseText: String?
-    let context: String?
-    let exegesis: String?
-    let themes: String?
-    let crossReferences: [CrossReference]? // This can now be nil
-
+    let verseReference: String?, verseText: String?, context: String?, exegesis: String?, themes: String?, crossReferences: [CrossReference]?
     enum CodingKeys: String, CodingKey {
-        case verseReference = "verse_reference"
-        case verseText = "verse_text"
-        case context
-        case exegesis
-        case themes
-        case crossReferences = "cross_references"
+        case verseReference = "verse_reference", verseText = "verse_text", context, exegesis, themes, crossReferences = "cross_references"
     }
 }
-
-// Making this optional too, just in case.
-struct CrossReference: Codable, Identifiable {
-    let id = UUID()
-    let reference: String?
-    let text: String?
-}
-
-// No changes to Groq API models or AnalysisTab enum
-struct GroqRequestBody: Codable {
-    let messages: [GroqMessage]
-    let model: String
-    let temperature: Double = 0.5
-    let max_tokens: Int = 2048
-    let top_p: Double = 1
-    let stop: String? = nil
-    let stream: Bool = false
-}
+struct CrossReference: Codable, Identifiable, Equatable { let id = UUID(); let reference: String?, text: String? }
+struct GroqRequestBody: Codable { let messages: [GroqMessage], model: String, temperature: Double = 0.5, max_tokens: Int = 2048, top_p: Double = 1, stop: String? = nil, stream: Bool = false }
 struct GroqResponse: Codable { let choices: [GroqChoice] }
 struct GroqChoice: Codable { let message: GroqMessage }
 struct GroqMessage: Codable { let role: String, content: String }
@@ -73,7 +35,7 @@ enum AnalysisTab: String, CaseIterable, Identifiable {
 // MARK: - Main View
 struct VerseView: View {
     
-    @State private var verseInput: String = "John 3:16"
+    @State private var verseInput: String = "Psalm 34:9"
     @State private var loadingState: LoadingState = .idle
     
     var body: some View {
@@ -83,14 +45,18 @@ struct VerseView: View {
                 HStack {
                     TextField("Enter a verse (e.g., Romans 8:28)", text: $verseInput)
                         .textFieldStyle(.roundedBorder)
+                        .onSubmit { analyzeVerse() } // Allow submitting with return key
                     
-                    Button("Analyze") {
-                        Task {
-                            await generateAnalysis()
+                    Button(action: analyzeVerse) {
+                        // Show progress indicator inside button when loading
+                        if case .loading = loadingState {
+                            ProgressView().tint(.white)
+                        } else {
+                            Text("Analyze")
                         }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(verseInput.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(verseInput.trimmingCharacters(in: .whitespaces).isEmpty || (loadingState == .loading))
                 }
                 .padding()
                 
@@ -99,23 +65,18 @@ struct VerseView: View {
                 // Dynamic Content Area (no changes)
                 switch loadingState {
                 case .idle:
-                    VStack {
-                        Spacer()
-                        Image(systemName: "text.book.closed")
-                            .font(.largeTitle).foregroundColor(.secondary)
-                        Text("Enter a verse and tap 'Analyze' to begin.").foregroundColor(.secondary).padding(.top)
-                        Spacer()
-                    }
+                    VStack { Spacer(); Image(systemName: "text.book.closed").font(.largeTitle).foregroundColor(.secondary); Text("Enter a verse and tap 'Analyze' to begin.").foregroundColor(.secondary).padding(.top); Spacer() }
                 case .loading:
                     VStack { Spacer(); ProgressView("Generating Analysis..."); Spacer() }
                 case .success(let analysis):
                     AnalysisDetailView(analysis: analysis)
                 case .error(let errorMessage):
-                    VStack {
+                    VStack(spacing: 15) {
                         Spacer()
-                        Image(systemName: "exclamationmark.triangle").font(.largeTitle).foregroundColor(.red)
-                        Text("An Error Occurred").font(.headline).padding(.top)
-                        Text(errorMessage).font(.footnote).foregroundColor(.secondary).multilineTextAlignment(.center).padding()
+                        Image(systemName: "exclamationmark.triangle.fill").font(.largeTitle).foregroundColor(.orange)
+                        Text("Analysis Failed").font(.headline)
+                        Text(errorMessage).font(.footnote).foregroundColor(.secondary).multilineTextAlignment(.center).padding(.horizontal)
+                        Button("Try Again", action: analyzeVerse).buttonStyle(.bordered)
                         Spacer()
                     }
                 }
@@ -125,21 +86,38 @@ struct VerseView: View {
         }
     }
     
-    // MARK: - Networking Function (MAJOR CHANGES HERE)
+    func analyzeVerse() {
+        // Helper to avoid duplicating the task logic
+        Task {
+            await generateAnalysis()
+        }
+    }
+    
+    // MARK: - Networking Function (MAJOR CHANGES)
     private func generateAnalysis() async {
         guard let apiKey = APIKeyManager.getGroqAPIKey() else {
             await MainActor.run { self.loadingState = .error("API Key not found.") }
             return
         }
         
+        // Hide keyboard
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        
         await MainActor.run { self.loadingState = .loading }
         
-        // MARK: - FIX #2: A more demanding prompt
+        // MARK: - FIX #1: The Ultimate Prompt
+        // This is now extremely specific about the most common failure points.
         let systemPrompt = """
-        You are a biblical analysis expert. For the given verse, generate a multi-layered analysis.
-        Your entire response MUST be ONLY the JSON object.
-        DO NOT include any explanatory text, introduction, or markdown like ```json.
-        The JSON object must have the following exact structure. If a value is not available, use an empty string "" or an empty array [].
+        You are a biblical analysis expert. Your task is to generate a multi-layered analysis for a given Bible verse.
+        Your response MUST be ONLY a single, valid JSON object.
+        DO NOT include any introductory text, explanations, apologies, or markdown formatting like ```json. Your response must start with `{` and end with `}`.
+
+        CRITICAL JSON FORMATTING RULES:
+        1.  Structure: Adhere strictly to the specified JSON structure. If a value isn't available, use an empty string "" or an empty array [].
+        2.  Escaping Quotes: You MUST properly escape any double quotes (") that appear inside a JSON string value with a backslash (\\"). For example, if a verse text is `He said, "Follow me."`, the JSON value must be `"He said, \\"Follow me.\\""`. This is the most important rule.
+        3.  No Trailing Commas: Do not include a comma after the last element in an object or array.
+
+        Here is the required JSON structure:
         {
           "verse_reference": "string",
           "verse_text": "string",
@@ -174,22 +152,23 @@ struct VerseView: View {
             request.httpBody = try JSONEncoder().encode(requestBody)
             
             let (data, _) = try await URLSession.shared.data(for: request)
-            
             let groqResponse = try JSONDecoder().decode(GroqResponse.self, from: data)
             
             guard let contentString = groqResponse.choices.first?.message.content else {
                 throw URLError(.cannotParseResponse)
             }
             
-            // --- FOR DEBUGGING: Print the raw response from the AI ---
-            print("--- RAW AI RESPONSE ---")
-            print(contentString)
-            print("-----------------------")
+            // --- FOR DEBUGGING ---
+            print("--- RAW AI RESPONSE ---\n\(contentString)\n-----------------------")
             
-            // MARK: - FIX #3: Robust JSON Extraction
-            // This finds the JSON block even if it's surrounded by text or markdown
-            guard let jsonData = extractJson(from: contentString) else {
-                throw URLError(.cannotParseResponse)
+            // MARK: - FIX #2: Sanitize and Extract JSON
+            // This robustly cleans the AI's output before decoding.
+            let sanitizedString = sanitize(jsonString: contentString)
+            
+            print("--- SANITIZED JSON ---\n\(sanitizedString)\n----------------------")
+            
+            guard let jsonData = sanitizedString.data(using: .utf8) else {
+                throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "Failed to convert sanitized string to data."])
             }
             
             let finalAnalysis = try JSONDecoder().decode(VerseAnalysis.self, from: jsonData)
@@ -198,46 +177,52 @@ struct VerseView: View {
             
         } catch {
             await MainActor.run {
-                // Provide a more helpful error message
-                var errorMessage = "Failed to generate or parse analysis. Error: \(error.localizedDescription)"
-                if let decodingError = error as? DecodingError {
-                    errorMessage += "\n\nDecoding Error: \(decodingError)"
-                }
-                self.loadingState = .error(errorMessage)
+                // MARK: - FIX #3: Better User-Facing Error Message
+                let userFriendlyError = """
+                The AI's response for this verse was not structured correctly.
+                This can sometimes happen with verses containing complex punctuation.
+                
+                Error Details: \(error.localizedDescription)
+                """
+                self.loadingState = .error(userFriendlyError)
             }
         }
     }
     
-    /// Helper function to extract a JSON object from a string that might contain other text.
-    private func extractJson(from string: String) -> Data? {
-        // Find the first "{" and the last "}"
-        guard let jsonStartRange = string.range(of: "{"),
-              let jsonEndRange = string.range(of: "}", options: .backwards) else {
-            return nil
+    /// Pre-processes the AI's string response to fix common JSON errors before decoding.
+    private func sanitize(jsonString: String) -> String {
+        var correctedString = jsonString
+        
+        // 1. Extract content between the first '{' and the last '}'
+        if let startRange = correctedString.range(of: "{"),
+           let endRange = correctedString.range(of: "}", options: .backwards) {
+            correctedString = String(correctedString[startRange.lowerBound...endRange.lowerBound])
+        } else {
+            // If we can't even find braces, return the broken string to let it fail loudly
+            return jsonString
         }
         
-        let jsonSubstring = string[jsonStartRange.lowerBound...jsonEndRange.lowerBound]
-        return Data(jsonSubstring.utf8)
+        // 2. Remove trailing commas from objects and arrays, a very common LLM error
+        // e.g., "key": "value", } -> "key": "value" }
+        correctedString = correctedString.replacingOccurrences(of: ",\\s*([}\\]])", with: "$1", options: .regularExpression)
+        
+        return correctedString
     }
 }
 
 
-// MARK: - AnalysisDetailView (UI must now handle optional data)
+// MARK: - Subviews (Updated to be more resilient)
 struct AnalysisDetailView: View {
     let analysis: VerseAnalysis
     @State private var selectedTab: AnalysisTab = .context
 
     var body: some View {
         VStack(spacing: 0) {
-            // MARK: - FIX #4: Use nil-coalescing (??) to provide default values
             VStack(alignment: .leading, spacing: 10) {
-                Text(analysis.verseReference ?? "Unknown Reference") // Provide default
-                    .font(.largeTitle)
-                    .fontWeight(.bold)
-                Text("\"\(analysis.verseText ?? "No text provided.")\"") // Provide default
-                    .font(.title3)
-                    .italic()
-                    .foregroundColor(.secondary)
+                Text(analysis.verseReference ?? "Unknown Reference")
+                    .font(.largeTitle).fontWeight(.bold)
+                Text("\"\(analysis.verseText ?? "No text provided.")\"")
+                    .font(.title3).italic().foregroundColor(.secondary)
             }
             .padding().frame(maxWidth: .infinity, alignment: .leading).background(Color(.systemGray6))
 
@@ -247,9 +232,7 @@ struct AnalysisDetailView: View {
             .pickerStyle(.segmented).padding()
 
             ScrollView {
-                contentForSelectedTab()
-                    .padding(.horizontal)
-                    .padding(.bottom)
+                contentForSelectedTab().padding([.horizontal, .bottom])
             }
             .frame(maxHeight: .infinity)
         }
@@ -265,18 +248,13 @@ struct AnalysisDetailView: View {
         case .themes:
             AnalysisTextView(title: "Theological Themes", content: analysis.themes ?? "No themes provided.")
         case .crossRef:
-            // Use `?? []` to handle a nil array gracefully
             CrossReferenceListView(title: "Illuminating Cross-References", references: analysis.crossReferences ?? [])
         }
     }
 }
 
-
-// MARK: - Reusable Subviews (Updated for optional data)
 struct AnalysisTextView: View {
-    let title: String
-    let content: String // This will receive a non-optional string from the view above
-    
+    let title: String, content: String
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title).font(.headline).foregroundColor(.secondary)
@@ -287,30 +265,23 @@ struct AnalysisTextView: View {
 }
 
 struct CrossReferenceListView: View {
-    let title: String
-    let references: [CrossReference]
-    
+    let title: String, references: [CrossReference]
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title).font(.headline).foregroundColor(.secondary)
             
-            // Check if the list is empty after handling the optional
             if references.isEmpty {
                 Text("No cross-references were provided for this verse.")
-                    .foregroundColor(.secondary)
-                    .padding()
-                    .frame(maxWidth: .infinity)
-                    .background(Color(.systemGray5))
-                    .cornerRadius(8)
+                    .foregroundColor(.secondary).padding().frame(maxWidth: .infinity)
+                    .background(Color(.systemGray5)).cornerRadius(8)
             } else {
                 ForEach(references) { ref in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(ref.reference ?? "N/A").fontWeight(.bold)
-                        Text(ref.text ?? "...")
-                            .font(.footnote)
-                            .foregroundColor(.secondary)
+                        Text(ref.text ?? "...").font(.footnote).foregroundColor(.secondary)
                     }
-                    .padding().frame(maxWidth: .infinity, alignment: .leading).background(Color(.systemGray5)).cornerRadius(8).padding(.bottom, 4)
+                    .padding().frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(.systemGray5)).cornerRadius(8).padding(.bottom, 4)
                 }
             }
         }
@@ -319,8 +290,5 @@ struct CrossReferenceListView: View {
 
 
 // MARK: - Preview
-struct VerseView_Previews: PreviewProvider {
-    static var previews: some View {
-        VerseView()
-    }
-}
+struct VerseView_Previews: PreviewProvider { static var previews: some View { VerseView() } }
+
