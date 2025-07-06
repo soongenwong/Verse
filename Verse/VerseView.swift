@@ -44,8 +44,12 @@ struct VerseView: View {
                 // Input Section (no changes)
                 HStack {
                     TextField("Enter a verse (e.g., Romans 8:28)", text: $verseInput)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { analyzeVerse() } // Allow submitting with return key
+                        .font(.title3) // MODIFIED: Larger font for the text field
+                        .padding(.vertical, 12) // MODIFIED: Increase vertical padding
+                        .padding(.horizontal)
+                        .background(Color(.systemGray6))
+                        .cornerRadius(15) // MODIFIED: More rounded corners
+                        .onSubmit { analyzeVerse() }
                     
                     Button(action: analyzeVerse) {
                         // Show progress indicator inside button when loading
@@ -53,6 +57,7 @@ struct VerseView: View {
                             ProgressView().tint(.white)
                         } else {
                             Text("Analyze")
+                            .font(.title3)
                         }
                     }
                     .buttonStyle(.borderedProminent)
@@ -82,7 +87,7 @@ struct VerseView: View {
                 }
             }
             .navigationTitle("Verse Explorer")
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.large)
         }
     }
     
