@@ -1,12 +1,12 @@
 import SwiftUI
 
-// MARK: - API Key Manager
-// Helper to read the API key from Secrets.plist
+// No changes to APIKeyManager or LoadingState
+
 struct APIKeyManager {
     static func getGroqAPIKey() -> String? {
         guard let path = Bundle.main.path(forResource: "Secrets", ofType: "plist"),
               let dict = NSDictionary(contentsOfFile: path),
-              let key = dict["GROQ_API_KEY"] as? String else {
+              let key = dict["GroqAPIKey"] as? String else {
             print("ERROR: Could not find Secrets.plist or 'GroqAPIKey' key in it. Please follow setup instructions.")
             return nil
         }
@@ -14,8 +14,6 @@ struct APIKeyManager {
     }
 }
 
-// MARK: - State Management
-// Enum to manage the different states of our view during the API call
 enum LoadingState {
     case idle
     case loading
@@ -23,19 +21,18 @@ enum LoadingState {
     case error(String)
 }
 
-// MARK: - Codable Models for API
-// These structs must now be Codable to work with the API response.
-// We use CodingKeys to map the AI's snake_case JSON to Swift's camelCase.
 
+// MARK: - FIX #1: Flexible Codable Models
+// We make properties optional (?) to prevent crashes if the AI omits a key.
 struct VerseAnalysis: Codable, Identifiable {
-    var id: String { verseReference } // Use a stable identifier
+    var id: String { verseReference ?? UUID().uuidString }
     
-    let verseReference: String
-    let verseText: String
-    let context: String
-    let exegesis: String
-    let themes: String
-    let crossReferences: [CrossReference]
+    let verseReference: String?
+    let verseText: String?
+    let context: String?
+    let exegesis: String?
+    let themes: String?
+    let crossReferences: [CrossReference]? // This can now be nil
 
     enum CodingKeys: String, CodingKey {
         case verseReference = "verse_reference"
@@ -47,20 +44,14 @@ struct VerseAnalysis: Codable, Identifiable {
     }
 }
 
+// Making this optional too, just in case.
 struct CrossReference: Codable, Identifiable {
     let id = UUID()
-    let reference: String
-    let text: String
-    
-    // Conformance to Codable is automatic as properties are Codable.
-    // We add CodingKeys in case the JSON is ever snake_case.
-    enum CodingKeys: String, CodingKey {
-        case reference
-        case text
-    }
+    let reference: String?
+    let text: String?
 }
 
-// Models for the Groq API request and response structure
+// No changes to Groq API models or AnalysisTab enum
 struct GroqRequestBody: Codable {
     let messages: [GroqMessage]
     let model: String
@@ -70,28 +61,11 @@ struct GroqRequestBody: Codable {
     let stop: String? = nil
     let stream: Bool = false
 }
-
-struct GroqResponse: Codable {
-    let choices: [GroqChoice]
-}
-
-struct GroqChoice: Codable {
-    let message: GroqMessage
-}
-
-struct GroqMessage: Codable {
-    let role: String
-    let content: String
-}
-
-
-// Enum for the tabs (no changes needed here)
+struct GroqResponse: Codable { let choices: [GroqChoice] }
+struct GroqChoice: Codable { let message: GroqMessage }
+struct GroqMessage: Codable { let role: String, content: String }
 enum AnalysisTab: String, CaseIterable, Identifiable {
-    case context = "Context"
-    case exegesis = "Exegesis"
-    case themes = "Themes"
-    case crossRef = "Cross-Ref"
-    
+    case context = "Context", exegesis = "Exegesis", themes = "Themes", crossRef = "Cross-Ref"
     var id: String { self.rawValue }
 }
 
@@ -105,7 +79,7 @@ struct VerseView: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
-                // MARK: 1. Input Section
+                // Input Section (no changes)
                 HStack {
                     TextField("Enter a verse (e.g., Romans 8:28)", text: $verseInput)
                         .textFieldStyle(.roundedBorder)
@@ -122,43 +96,26 @@ struct VerseView: View {
                 
                 Divider()
                 
-                // MARK: 2. Dynamic Content Area
-                // This view now changes based on the loading state
+                // Dynamic Content Area (no changes)
                 switch loadingState {
                 case .idle:
                     VStack {
                         Spacer()
                         Image(systemName: "text.book.closed")
-                            .font(.largeTitle)
-                            .foregroundColor(.secondary)
-                        Text("Enter a verse and tap 'Analyze' to begin.")
-                            .foregroundColor(.secondary)
-                            .padding(.top)
+                            .font(.largeTitle).foregroundColor(.secondary)
+                        Text("Enter a verse and tap 'Analyze' to begin.").foregroundColor(.secondary).padding(.top)
                         Spacer()
                     }
                 case .loading:
-                    VStack {
-                        Spacer()
-                        ProgressView("Generating Analysis...")
-                        Spacer()
-                    }
+                    VStack { Spacer(); ProgressView("Generating Analysis..."); Spacer() }
                 case .success(let analysis):
-                    // On success, we show the tabbed interface
                     AnalysisDetailView(analysis: analysis)
                 case .error(let errorMessage):
                     VStack {
                         Spacer()
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.largeTitle)
-                            .foregroundColor(.red)
-                        Text("An Error Occurred")
-                            .font(.headline)
-                            .padding(.top)
-                        Text(errorMessage)
-                            .font(.footnote)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding()
+                        Image(systemName: "exclamationmark.triangle").font(.largeTitle).foregroundColor(.red)
+                        Text("An Error Occurred").font(.headline).padding(.top)
+                        Text(errorMessage).font(.footnote).foregroundColor(.secondary).multilineTextAlignment(.center).padding()
                         Spacer()
                     }
                 }
@@ -168,35 +125,28 @@ struct VerseView: View {
         }
     }
     
-    // MARK: - Networking Function
+    // MARK: - Networking Function (MAJOR CHANGES HERE)
     private func generateAnalysis() async {
-        // Guard against missing API key
         guard let apiKey = APIKeyManager.getGroqAPIKey() else {
-            await MainActor.run {
-                self.loadingState = .error("API Key not found. Please check your Secrets.plist configuration.")
-            }
+            await MainActor.run { self.loadingState = .error("API Key not found.") }
             return
         }
         
-        // Set state to loading
         await MainActor.run { self.loadingState = .loading }
         
-        // Define the prompt for the AI
+        // MARK: - FIX #2: A more demanding prompt
         let systemPrompt = """
         You are a biblical analysis expert. For the given verse, generate a multi-layered analysis.
-        Your entire response MUST be a single, valid JSON object with NO markdown formatting (like ```json).
-        The JSON object must have the following exact structure:
+        Your entire response MUST be ONLY the JSON object.
+        DO NOT include any explanatory text, introduction, or markdown like ```json.
+        The JSON object must have the following exact structure. If a value is not available, use an empty string "" or an empty array [].
         {
           "verse_reference": "string",
           "verse_text": "string",
-          "context": "string (Historical and literary background)",
-          "exegesis": "string (A straightforward explanation of the text)",
-          "themes": "string (Key theological doctrines present, use bullet points)",
+          "context": "string",
+          "exegesis": "string",
+          "themes": "string",
           "cross_references": [
-            { "reference": "string", "text": "string" },
-            { "reference": "string", "text": "string" },
-            { "reference": "string", "text": "string" },
-            { "reference": "string", "text": "string" },
             { "reference": "string", "text": "string" }
           ]
         }
@@ -225,68 +175,77 @@ struct VerseView: View {
             
             let (data, _) = try await URLSession.shared.data(for: request)
             
-            // First, decode the main Groq response
             let groqResponse = try JSONDecoder().decode(GroqResponse.self, from: data)
             
             guard let contentString = groqResponse.choices.first?.message.content else {
                 throw URLError(.cannotParseResponse)
             }
             
-            // The AI's response is a string containing JSON. We need to decode that string.
-            guard let jsonData = contentString.data(using: .utf8) else {
+            // --- FOR DEBUGGING: Print the raw response from the AI ---
+            print("--- RAW AI RESPONSE ---")
+            print(contentString)
+            print("-----------------------")
+            
+            // MARK: - FIX #3: Robust JSON Extraction
+            // This finds the JSON block even if it's surrounded by text or markdown
+            guard let jsonData = extractJson(from: contentString) else {
                 throw URLError(.cannotParseResponse)
             }
             
             let finalAnalysis = try JSONDecoder().decode(VerseAnalysis.self, from: jsonData)
             
-            // Switch to main thread to update UI state
-            await MainActor.run {
-                self.loadingState = .success(finalAnalysis)
-            }
+            await MainActor.run { self.loadingState = .success(finalAnalysis) }
             
         } catch {
-            // Switch to main thread to update UI state with error
             await MainActor.run {
-                print("API Error: \(error)")
-                self.loadingState = .error("Failed to generate or parse analysis. Error: \(error.localizedDescription)")
+                // Provide a more helpful error message
+                var errorMessage = "Failed to generate or parse analysis. Error: \(error.localizedDescription)"
+                if let decodingError = error as? DecodingError {
+                    errorMessage += "\n\nDecoding Error: \(decodingError)"
+                }
+                self.loadingState = .error(errorMessage)
             }
         }
+    }
+    
+    /// Helper function to extract a JSON object from a string that might contain other text.
+    private func extractJson(from string: String) -> Data? {
+        // Find the first "{" and the last "}"
+        guard let jsonStartRange = string.range(of: "{"),
+              let jsonEndRange = string.range(of: "}", options: .backwards) else {
+            return nil
+        }
+        
+        let jsonSubstring = string[jsonStartRange.lowerBound...jsonEndRange.lowerBound]
+        return Data(jsonSubstring.utf8)
     }
 }
 
 
-// MARK: - AnalysisDetailView (The UI for a successful response)
-// We've moved the successful UI into its own view to keep the main view clean.
+// MARK: - AnalysisDetailView (UI must now handle optional data)
 struct AnalysisDetailView: View {
     let analysis: VerseAnalysis
     @State private var selectedTab: AnalysisTab = .context
 
     var body: some View {
         VStack(spacing: 0) {
-            // 1. Verse Header
+            // MARK: - FIX #4: Use nil-coalescing (??) to provide default values
             VStack(alignment: .leading, spacing: 10) {
-                Text(analysis.verseReference)
+                Text(analysis.verseReference ?? "Unknown Reference") // Provide default
                     .font(.largeTitle)
                     .fontWeight(.bold)
-                Text("\"\(analysis.verseText)\"")
+                Text("\"\(analysis.verseText ?? "No text provided.")\"") // Provide default
                     .font(.title3)
                     .italic()
                     .foregroundColor(.secondary)
             }
-            .padding()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(.systemGray6))
+            .padding().frame(maxWidth: .infinity, alignment: .leading).background(Color(.systemGray6))
 
-            // 2. Tab Selector
             Picker("Analysis Lens", selection: $selectedTab.animation(.easeInOut)) {
-                ForEach(AnalysisTab.allCases) { tab in
-                    Text(tab.rawValue).tag(tab)
-                }
+                ForEach(AnalysisTab.allCases) { tab in Text(tab.rawValue).tag(tab) }
             }
-            .pickerStyle(.segmented)
-            .padding()
+            .pickerStyle(.segmented).padding()
 
-            // 3. Dynamic Content Area
             ScrollView {
                 contentForSelectedTab()
                     .padding(.horizontal)
@@ -300,31 +259,28 @@ struct AnalysisDetailView: View {
     private func contentForSelectedTab() -> some View {
         switch selectedTab {
         case .context:
-            AnalysisTextView(title: "Historical & Literary Context", content: analysis.context)
+            AnalysisTextView(title: "Historical & Literary Context", content: analysis.context ?? "No context provided.")
         case .exegesis:
-            AnalysisTextView(title: "Exegesis (Direct Interpretation)", content: analysis.exegesis)
+            AnalysisTextView(title: "Exegesis (Direct Interpretation)", content: analysis.exegesis ?? "No exegesis provided.")
         case .themes:
-            AnalysisTextView(title: "Theological Themes", content: analysis.themes)
+            AnalysisTextView(title: "Theological Themes", content: analysis.themes ?? "No themes provided.")
         case .crossRef:
-            CrossReferenceListView(title: "Illuminating Cross-References", references: analysis.crossReferences)
+            // Use `?? []` to handle a nil array gracefully
+            CrossReferenceListView(title: "Illuminating Cross-References", references: analysis.crossReferences ?? [])
         }
     }
 }
 
 
-// MARK: - Reusable Subviews (No changes needed here)
+// MARK: - Reusable Subviews (Updated for optional data)
 struct AnalysisTextView: View {
     let title: String
-    let content: String
+    let content: String // This will receive a non-optional string from the view above
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(.headline)
-                .foregroundColor(.secondary)
-            Text(content)
-                .font(.body)
-                .lineSpacing(5)
+            Text(title).font(.headline).foregroundColor(.secondary)
+            Text(content).font(.body).lineSpacing(5)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -336,23 +292,26 @@ struct CrossReferenceListView: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(.headline)
-                .foregroundColor(.secondary)
+            Text(title).font(.headline).foregroundColor(.secondary)
             
-            ForEach(references) { ref in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(ref.reference)
-                        .fontWeight(.bold)
-                    Text(ref.text)
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
+            // Check if the list is empty after handling the optional
+            if references.isEmpty {
+                Text("No cross-references were provided for this verse.")
+                    .foregroundColor(.secondary)
+                    .padding()
+                    .frame(maxWidth: .infinity)
+                    .background(Color(.systemGray5))
+                    .cornerRadius(8)
+            } else {
+                ForEach(references) { ref in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(ref.reference ?? "N/A").fontWeight(.bold)
+                        Text(ref.text ?? "...")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding().frame(maxWidth: .infinity, alignment: .leading).background(Color(.systemGray5)).cornerRadius(8).padding(.bottom, 4)
                 }
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(.systemGray5))
-                .cornerRadius(8)
-                .padding(.bottom, 4)
             }
         }
     }
@@ -360,7 +319,6 @@ struct CrossReferenceListView: View {
 
 
 // MARK: - Preview
-// The preview will show the idle state, as it cannot make a network call.
 struct VerseView_Previews: PreviewProvider {
     static var previews: some View {
         VerseView()
